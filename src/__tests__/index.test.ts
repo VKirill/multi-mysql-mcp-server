@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { isSingleStatement, resolveEnvVars } from "../index.js";
+import { isSingleStatement, isDdlStatement, resolveEnvVars } from "../index.js";
 
 // ─── resolveEnvVars ──────────────────────────────────────────────
 
@@ -278,6 +278,126 @@ describe("isSingleStatement", () => {
 
     it("semicolon after block comment is still detected", () => {
       expect(isSingleStatement("SELECT /* comment */ 1; DROP TABLE users")).toBe(false);
+    });
+  });
+
+  // ─── MySQL conditional comments /*!...*/ ────────────────────────
+
+  describe("handles MySQL conditional comments /*!...*/", () => {
+    it("injection inside conditional comment is detected", () => {
+      expect(isSingleStatement("SELECT 1 /*!; DROP TABLE users */")).toBe(false);
+    });
+
+    it("injection inside versioned conditional comment", () => {
+      expect(isSingleStatement("SELECT 1 /*!50000; DROP TABLE users */")).toBe(false);
+    });
+
+    it("safe conditional comment (optimizer hint)", () => {
+      expect(isSingleStatement("SELECT /*!50000 SQL_NO_CACHE */ 1")).toBe(true);
+    });
+
+    it("conditional comment with no semicolon inside", () => {
+      expect(isSingleStatement("SELECT /*!40100 HIGH_PRIORITY */ * FROM t")).toBe(true);
+    });
+
+    it("regular block comment still skipped", () => {
+      expect(isSingleStatement("SELECT /* ; */ 1")).toBe(true);
+    });
+
+    it("conditional comment with semicolon after closing", () => {
+      expect(isSingleStatement("SELECT /*!50000 SQL_NO_CACHE */ 1; DROP TABLE t")).toBe(false);
+    });
+  });
+});
+
+// ─── isDdlStatement ─────────────────────────────────────────────
+
+describe("isDdlStatement", () => {
+  describe("detects DDL/admin statements", () => {
+    it("DROP TABLE", () => {
+      expect(isDdlStatement("DROP TABLE users")).toBe(true);
+    });
+
+    it("CREATE TABLE", () => {
+      expect(isDdlStatement("CREATE TABLE t (id INT)")).toBe(true);
+    });
+
+    it("ALTER TABLE", () => {
+      expect(isDdlStatement("ALTER TABLE users ADD COLUMN age INT")).toBe(true);
+    });
+
+    it("TRUNCATE TABLE", () => {
+      expect(isDdlStatement("TRUNCATE TABLE users")).toBe(true);
+    });
+
+    it("RENAME TABLE", () => {
+      expect(isDdlStatement("RENAME TABLE old_t TO new_t")).toBe(true);
+    });
+
+    it("GRANT privilege", () => {
+      expect(isDdlStatement("GRANT SELECT ON *.* TO user@host")).toBe(true);
+    });
+
+    it("LOAD DATA", () => {
+      expect(isDdlStatement("LOAD DATA INFILE '/tmp/data.csv' INTO TABLE t")).toBe(true);
+    });
+
+    it("case insensitive", () => {
+      expect(isDdlStatement("drop table users")).toBe(true);
+    });
+
+    it("with leading whitespace", () => {
+      expect(isDdlStatement("   DROP TABLE users")).toBe(true);
+    });
+
+    it("with leading comment", () => {
+      expect(isDdlStatement("-- header\nDROP TABLE users")).toBe(true);
+    });
+
+    it("with leading block comment", () => {
+      expect(isDdlStatement("/* admin */ DROP TABLE users")).toBe(true);
+    });
+
+    it("with leading hash comment", () => {
+      expect(isDdlStatement("# admin\nDROP TABLE users")).toBe(true);
+    });
+  });
+
+  describe("allows non-DDL statements", () => {
+    it("SELECT", () => {
+      expect(isDdlStatement("SELECT * FROM users")).toBe(false);
+    });
+
+    it("INSERT", () => {
+      expect(isDdlStatement("INSERT INTO t VALUES (1)")).toBe(false);
+    });
+
+    it("UPDATE", () => {
+      expect(isDdlStatement("UPDATE t SET x = 1")).toBe(false);
+    });
+
+    it("DELETE", () => {
+      expect(isDdlStatement("DELETE FROM t WHERE id = 1")).toBe(false);
+    });
+
+    it("SHOW", () => {
+      expect(isDdlStatement("SHOW TABLES")).toBe(false);
+    });
+
+    it("EXPLAIN", () => {
+      expect(isDdlStatement("EXPLAIN SELECT 1")).toBe(false);
+    });
+
+    it("SET variable", () => {
+      expect(isDdlStatement("SET @x = 1")).toBe(false);
+    });
+
+    it("empty string", () => {
+      expect(isDdlStatement("")).toBe(false);
+    });
+
+    it("only comments", () => {
+      expect(isDdlStatement("-- just a comment")).toBe(false);
     });
   });
 });

@@ -300,8 +300,18 @@ export function isSingleStatement(sql: string): boolean {
       continue;
     }
 
-    // /* block comment */ → skip to closing
+    // /* ... */ block comment  or  /*! ... */ conditional comment
     if (ch === "/" && next === "*") {
+      // /*!...*/ or /*!NNNNN...*/ — MySQL conditional comment:
+      // Content IS executed as SQL, so parse it instead of skipping
+      if (i + 2 < len && sql[i + 2] === "!") {
+        let j = i + 3;
+        // Skip optional version number (up to 5 digits)
+        while (j < len && j < i + 8 && sql[j] >= "0" && sql[j] <= "9") j++;
+        i = j;
+        continue;
+      }
+      // Regular block comment — skip entirely
       const end = sql.indexOf("*/", i + 2);
       if (end === -1) return true;
       i = end + 2;
@@ -379,7 +389,67 @@ export function isSingleStatement(sql: string): boolean {
   return true;
 }
 
+// ─── DDL Detection ────────────────────────────────────────────────
+
+/** DDL/admin keywords that bypass read-only transactions via implicit commit. */
+const DDL_KEYWORDS = new Set([
+  "CREATE", "ALTER", "DROP", "RENAME", "TRUNCATE",
+  "GRANT", "REVOKE", "LOCK", "UNLOCK",
+  "LOAD", "FLUSH", "KILL", "SHUTDOWN",
+  "INSTALL", "UNINSTALL",
+]);
+
+/**
+ * Extracts the first SQL keyword (skipping leading whitespace and comments).
+ * Returns true if it's a DDL/admin command that would bypass
+ * SET SESSION TRANSACTION READ ONLY via implicit commit in MySQL.
+ */
+export function isDdlStatement(sql: string): boolean {
+  let i = 0;
+  const len = sql.length;
+  while (i < len) {
+    const ch = sql[i];
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") { i++; continue; }
+    if (ch === "-" && i + 1 < len && sql[i + 1] === "-") {
+      i = sql.indexOf("\n", i);
+      if (i === -1) return false;
+      i++;
+      continue;
+    }
+    if (ch === "#") {
+      i = sql.indexOf("\n", i);
+      if (i === -1) return false;
+      i++;
+      continue;
+    }
+    if (ch === "/" && i + 1 < len && sql[i + 1] === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      if (end === -1) return false;
+      i = end + 2;
+      continue;
+    }
+    break;
+  }
+  const match = sql.substring(i).match(/^([a-zA-Z]+)/);
+  if (!match) return false;
+  return DDL_KEYWORDS.has(match[1].toUpperCase());
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────
+
+/** Extract database name from DbConnection (handles URL parsing safely). */
+function extractDbName(conn: DbConnection): string | undefined {
+  if (conn.database) return conn.database;
+  if (!conn.url) return undefined;
+  try {
+    const parsed = new URL(conn.url);
+    const path = parsed.pathname;
+    return path && path.length > 1 ? path.substring(1) : undefined;
+  } catch {
+    // Fallback for non-standard URLs
+    return conn.url.split("/").pop()?.split("?")[0] || undefined;
+  }
+}
 
 function errorResult(e: unknown) {
   const msg = e instanceof Error ? e.message : String(e);
@@ -390,11 +460,10 @@ function errorResult(e: unknown) {
 }
 
 async function withPool<T>(
-  label: string,
-  fn: (conn: mysql.PoolConnection) => Promise<T>
+  conn: DbConnection,
+  fn: (connection: mysql.PoolConnection) => Promise<T>
 ): Promise<T> {
-  const dbConn = await getConnection(label);
-  const pool = getOrCreatePool(dbConn);
+  const pool = getOrCreatePool(conn);
   const connection = await pool.getConnection();
   try {
     return await fn(connection);
@@ -486,7 +555,20 @@ server.tool(
 
       const conn = await getConnection(database);
 
-      const result = await withPool(database, async (connection) => {
+      // Block DDL in read-only mode (DDL causes implicit commit, bypassing READ ONLY)
+      if (conn.readOnly && isDdlStatement(query)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Error: DDL/admin statements (CREATE, DROP, ALTER, TRUNCATE, etc.) are not allowed in read-only mode.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const result = await withPool(conn, async (connection) => {
         if (conn.readOnly) {
           await connection.query("SET SESSION TRANSACTION READ ONLY");
         }
@@ -569,9 +651,9 @@ server.tool(
   async ({ database }) => {
     try {
       const conn = await getConnection(database);
-      const dbName = conn.database || conn.url?.split("/").pop()?.split("?")[0];
+      const dbName = extractDbName(conn);
 
-      const result = await withPool(database, (connection) =>
+      const result = await withPool(conn, (connection) =>
         connection.execute(
           `SELECT TABLE_NAME AS table_name,
                   TABLE_ROWS AS estimated_rows,
@@ -626,9 +708,9 @@ server.tool(
   async ({ database, table }) => {
     try {
       const conn = await getConnection(database);
-      const dbName = conn.database || conn.url?.split("/").pop()?.split("?")[0];
+      const dbName = extractDbName(conn);
 
-      const result = await withPool(database, async (connection) => {
+      const result = await withPool(conn, async (connection) => {
         const [cols] = await connection.execute(
           `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
                   COLUMN_KEY, EXTRA
@@ -722,7 +804,8 @@ server.tool(
   },
   async ({ database }) => {
     try {
-      const result = await withPool(database, (connection) =>
+      const conn = await getConnection(database);
+      const result = await withPool(conn, (connection) =>
         connection.execute(
           `SELECT s.SCHEMA_NAME,
                   (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES t
@@ -759,8 +842,9 @@ server.tool(
   },
   async ({ database }) => {
     try {
+      const conn = await getConnection(database);
       const start = Date.now();
-      const result = await withPool(database, (connection) =>
+      const result = await withPool(conn, (connection) =>
         connection.execute("SELECT VERSION() AS version, NOW() AS server_time")
       );
       const latencyMs = Date.now() - start;
@@ -816,7 +900,21 @@ server.tool(
       // EXPLAIN ANALYZE actually executes the query in MySQL, so we must
       // wrap in a transaction that always rolls back to prevent data changes.
       const conn = await getConnection(database);
-      const result = await withPool(database, async (connection) => {
+
+      // Block DDL in read-only mode (EXPLAIN ANALYZE on DDL would execute it)
+      if (conn.readOnly && isDdlStatement(query)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Error: DDL/admin statements cannot be explained in read-only mode.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const result = await withPool(conn, async (connection) => {
         if (conn.readOnly) {
           await connection.query("SET SESSION TRANSACTION READ ONLY");
         }
