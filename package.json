@@ -1,0 +1,66 @@
+{
+  "name": "mcp-mysql-multi",
+  "version": "1.0.0",
+  "description": "Multi-database MySQL MCP server. One server, many databases. Supports per-project isolation via --label filter.",
+  "type": "module",
+  "bin": {
+    "mcp-mysql": "dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "config.example.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "mysql",
+    "mariadb",
+    "model-context-protocol",
+    "claude",
+    "cursor",
+    "ai",
+    "database",
+    "multi-database",
+    "connection-pool",
+    "ssl"
+  ],
+  "author": "VKirill",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VKirill/multi-mysql-mcp-server.git"
+  },
+  "homepage": "https://github.com/VKirill/multi-mysql-mcp-server#readme",
+  "bugs": {
+    "url": "https://github.com/VKirill/multi-mysql-mcp-server/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "mysql2": "^3.12.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.4.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
+  }
+}

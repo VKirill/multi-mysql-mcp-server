@@ -1,0 +1,42 @@
+{
+  "connections": [
+    {
+      "label": "local-dev",
+      "host": "localhost",
+      "port": 3306,
+      "user": "dev",
+      "password": "devpass123",
+      "database": "myapp",
+      "readOnly": true
+    },
+    {
+      "label": "cloud-rds",
+      "url": "mysql://user:password@rds-instance.region.rds.amazonaws.com:3306/mydb",
+      "ssl": true,
+      "readOnly": true
+    },
+    {
+      "label": "staging",
+      "host": "staging-db.internal",
+      "port": 3306,
+      "user": "${MYSQL_USER}",
+      "password": "${MYSQL_PASSWORD}",
+      "database": "staging_db",
+      "ssl": {
+        "rejectUnauthorized": true
+      },
+      "readOnly": true,
+      "poolSize": 3
+    },
+    {
+      "label": "legacy",
+      "host": "old-server",
+      "port": 3306,
+      "user": "app",
+      "password": "pass",
+      "database": "legacy",
+      "enabled": false,
+      "readOnly": true
+    }
+  ]
+}
